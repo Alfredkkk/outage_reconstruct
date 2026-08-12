@@ -1,0 +1,71 @@
+# macOS and filesystem metadata
+.DS_Store
+._*
+Thumbs.db
+
+# Editor and IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python environments and local environment variables
+.venv/
+venv/
+env/
+ENV/
+.conda/
+.env
+.env.*
+!.env.example
+
+# Packaging and build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Jupyter temporary files
+.ipynb_checkpoints/
+
+# Pipeline-generated outputs and runtime logs
+output/
+logs/
+*.log
+reproduction_environment.txt
+
+# Temporary working directories
+tmp/
+temp/
+.cache/
+
+# Proprietary or machine-local research data
+# Raw GROWER data are governed separately and must not be committed.
+raw_data/
+data/raw/
+
+# Common large generated data formats
+*.parquet
+*.feather
+*.pkl
+*.pickle
+*.joblib
+
+# Local backup and conflict files
+*.bak
+*.orig
+*.tmp
+*conflicted copy*

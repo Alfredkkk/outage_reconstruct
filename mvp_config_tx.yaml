@@ -1,0 +1,176 @@
+globals:
+  LOCAL_FILE_BASE_PATH: ~/scratch/data/grower/mandv/raw_data
+
+# 29 layouts
+# Unsuccessful CP layouts: ga11 Mitchell and ga1 Jefferson
+# Buggy layouts: GA11 Tri-State
+# Total used: 26
+
+# Population from grower outage meta scraper (2023?) while # counties from 12/2024  
+
+# Size: very small = < 10000, small = 10000-50000, medium = 50000-100000, large = 100000-200000, very large = > 200000
+
+providers:
+  # - name: Central Georgia EMC # # GrDoGaMTCP DONE 
+  #   state: ga
+  #   layout: 1
+  #   size: medium # Population: 62528  / 16 counties  = 3908
+  #   customer_population: 3908
+  # - name: Diverse Power # GrDoGaMTCP DONE
+  #   state: ga
+  #   layout: 1
+  #   size: small # Population: 35409 / 14 counties   = 2314.93
+  #   customer_population: 2314.93
+  # - name: Flint EMC    # GrDoGaMTCP DONE
+  #   state: ga
+  #   layout: 1
+  #   size: medium # Population: 90903 / 20 counties = 4545.15
+  #   customer_population: 4545.15
+  # - name: Grady EMC  # GrDoGaMTCP DONE
+  #   state: ga
+  #   layout: 1
+  #   size: small # Population: 20314 / 7 counties =  2902
+  #   customer_population: 2902
+  # # - name: Jefferson Energy Cooperative    # GrDoGaMT   # CHANGEPOINTS TAKING TOO LONG  # 12 hours not enough
+  # #   state: ga
+  # #   layout: 1
+  # #   size: small # Population: 35652 / 12 counties = 2971
+  #   customer_population: 2971
+  # - name: North Georgia EMC # GrDoGaMTCP DONE
+  #   state: ga
+  #   layout: 1
+  #   size: large # Population: 102844 / 10 counties = 10284.4
+  #   customer_population: 10284.4
+  # - name: Okefenoke REMC  # GrDoGaMTCP DONE  
+  #   state: ga
+  #   layout: 1
+  #   size: small # Population: 27854 / 6 counties = 4642.33
+  #   customer_population: 4642.33
+  # - name: Satilla REMC # GrDoGaMTCP DONE   # has old CP but redo  # should have addressed overflow error?
+  #   state: ga
+  #   layout: 1
+  #   size: medium # Population: 57680 / 12 counties = 4806.67
+  #   customer_population: 4806.67
+  # - name: Washington EMC  # GrDoGaMTCP Done  # took 10 hours bruh
+  #   state: ga
+  #   layout: 1
+  #   size: small # Population: 15939 / 11 counties = 1449
+  #   customer_population: 1449
+
+
+  # - name: Bluebonnet Electric Coop, Inc. # GrDoGaMTCP DONE
+  #   state: tx
+  #   layout: 8
+  #   size: large # Population: 112682 / 19 counties  = 5930.63
+  #   customer_population: 5930.63
+  - name: Bowie-Cass Electric Coop, Inc. # GrDoGaMTCP DONE
+    state: tx
+    layout: 8
+    size: small # Population: 38741 / 7 counties  = 5534.43
+    customer_population: 5534.43
+  - name: Bryan Texas Utilities # GrDoGaMTCP DONE
+    state: tx
+    layout: 8
+    size: medium # Population: 64294 / 5 counties = 12,858.8
+    customer_population: 12,858.8
+  - name: Farmers Electric Coop, Inc. # GrDoGaMTCP DONE
+    state: tx
+    layout: 8
+    size: medium # Population: 82289 / 16 counties = 5143.0625
+    customer_population: 5143.0625
+  - name: Guadalupe Valley Electric Coop, Inc. # GrDoGaMTCP DONE # CP took over an hour 
+    state: tx
+    layout: 8
+    size: medium # Population: 91761 / 15 counties = 6117.4
+    customer_population: 6117.4
+  - name: Mid-South Electric Coop Association # GrDoGaMTCP DONE
+    state: tx
+    layout: 8
+    size: small # Population: 35206 / 8 counties = 4400.75
+    customer_population: 4400.75
+  - name: New Braunfels Utilities # GrDoGaMTCP DONE  # 40 minute CP 
+    state: tx
+    layout: 8
+    size: small # Population: 48910 / 4 counties = 12227.5
+    customer_population: 12227.5
+  - name: Nueces Electric Coop, Inc. # GrDoGaMTCP DONE
+    state: tx
+    layout: 8
+    size: small # Population: 18275 / 10 counties = 1827.5
+    customer_population: 1827.5
+  - name: Trinity Valley Electric Coop, Inc. # GrDoGaMTCP DONE
+    state: tx
+    layout: 8
+    size: medium # Population: 79448 / 11 counties = 7222.545
+    customer_population: 7222.545
+
+
+
+  # - name: Mitchell EMC  # GrDoGaMT   CHANGEPOINTS TAKING TOO LONG  # i think this one is also a lost cause
+  #   state: ga
+  #   layout: 11  
+  #   size: small # Population: 25442 / 15 counties = 1696.13
+  #   customer_population: 1696.13
+  # - name: Tri-State EMC  # DO NOT USE. PER_COUNTY 'county' has state names and not county
+  #   state: ga
+  #   layout: 11
+  #   size: small  # Population: 15494  / 2 counties = 7747
+  #   customer_population: 7747
+  # - name: Walton EMC   # GrDoGaMTCP DONE  # Took 4 hours
+  #   state: ga
+  #   layout: 11
+  #   size: large # Population: 134855 / 11 counties = 11986.82
+  #   customer_population: 11986.82
+
+
+  - name: Cherokee County Electric Coop Association # GrDoGaMTCP DONE # 6 hours CP 
+    state: tx 
+    layout: 12 
+    size: small # Population: 22032 / 8 counties = 2754
+    customer_population: 2754
+  - name: Houston County Electric Coop, Inc. # GrDoGaMTCP DONE   
+    state: tx
+    layout: 12
+    size: small # Population: 22303 / 10 counties = 2230.3
+    customer_population: 2230.3
+  - name: Wise Electric Coop, Inc. # GrDoGaMTCP DONE 
+    state: tx
+    layout: 12
+    size: small # Population: 24880 / 8 counties = 3110
+    customer_population: 3110
+
+
+
+  # - name: Coastal Electric Cooperation # GrDoGaMTCP DONE! 
+  #   state: ga
+  #   layout: 3 
+  #   size: small # Population: 21596 / 7 counties = 3085.14
+  #   customer_population: 3085.14
+  # - name: Irwin EMC # GrDoGaMTCP DONE!  
+  #   state: ga
+  #   layout: 3
+  #   size: small # Population: 12679 / 9 counties = 1408.78
+  #   customer_population: 1408.78
+  # - name: Middle Georgia EMC # GrDoGaMTCP DONE! 
+  #   state: ga
+  #   layout: 3 
+  #   size: small # Population: 10075 / 9 counties = 1119.4
+  #   customer_population: 1119.4
+  # - name: Upson EMC # GrDoGaMTCP DONE! 
+  #   state: ga
+  #   layout: 3   
+  #   size: very small # Population: 9582 / 6 counties = 1597
+  #   customer_population: 1597
+  - name: Southwestern Electric Coop, Inc.  # GrDoGaMTCP Done 
+    state: tx
+    layout: 16 
+    size: very small # Population: 9905 / 24 counties = 412.71
+    customer_population: 412.71
+
+
+
+  # - name: investor_all    # CA
+  #   state: ca
+  #   layout: investor
+  #   size: large # Population: 90903 / 20 counties = 4545.15
+  #   customer_population: 4545.15  # HACK
