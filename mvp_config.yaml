@@ -1,5 +1,5 @@
 globals:
-  LOCAL_FILE_BASE_PATH: /root/autodl-tmp/raw_data
+  LOCAL_FILE_BASE_PATH: C:\Users\93541\OneDrive - Georgia Institute of Technology\GeorgiaTech\Research\VIP\GROWER\pipeline\raw_data
 
 # 29 layouts
 # Unsuccessful CP layouts: ga11 Mitchell and ga1 Jefferson

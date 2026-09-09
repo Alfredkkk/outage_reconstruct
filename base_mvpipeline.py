@@ -12,6 +12,14 @@ from dateutil import tz
 from datetime import datetime
 from datetime import timedelta
 from utils.algorithms import do_algorithm, ganz_algorithm, mixed_threshold_algorithm, changepoints_algorithm
+from utils.ground_truth import (
+    GROUND_TRUTH_VERSION,
+    GroundTruthSettings,
+    build_ground_truth_events,
+    coerce_datetime_series,
+    prepare_outage_snapshots,
+    validate_ground_truth_events,
+)
 import logging
 import numpy as np
 import concurrent.futures as cf
@@ -26,7 +34,32 @@ ganz_threshold_default = 0.05
 mixed_threshold_relative_threshold_default = 0.0005 # 0.1
 mixed_threshold_absolute_difference_default = 0
 
+
+def _path_for_io(path):
+    """Return an absolute path that supports long filenames on Windows."""
+    path_string = os.path.abspath(os.fspath(path))
+    if os.name != 'nt' or path_string.startswith('\\\\?\\'):
+        return path_string
+    if path_string.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + path_string[2:]
+    return '\\\\?\\' + path_string
+
+
 class BaseMVPipeline:
+    ground_truth_event_id_columns = ()
+    ground_truth_event_id_output_column = "raw_event_id"
+    ground_truth_start_column = None
+    ground_truth_customers_column = None
+    ground_truth_source_duration_column = None
+    ground_truth_utility_column = None
+    ground_truth_longitude_column = None
+    ground_truth_latitude_column = None
+    ground_truth_zip_column = None
+    ground_truth_county_column = None
+    ground_truth_restored_column = None
+    ground_truth_identity_is_derived = False
+    ground_truth_start_time_merge_tolerance_minutes = 16.0
+
     def __init__(self, config, base_file_path, start_time = "2023-11-01 00:00:00", end_time = "2024-11-30 23:59:59", output_path = None):
         self.config = config
         self.base_file_path = base_file_path
@@ -44,6 +77,10 @@ class BaseMVPipeline:
         self.methods_to_run = []
 
         self._ground_truth_df = pd.DataFrame({})
+        self._ground_truth_all_df = pd.DataFrame({})
+        self._ground_truth_flagged_df = pd.DataFrame({})
+        self._ground_truth_quality_report = pd.DataFrame({})
+        self._ground_truth_snapshot_report = pd.DataFrame({})
         self._do_df = pd.DataFrame({})
         self._do_threshold = 0.001
         self._ganz_df = pd.DataFrame({})
@@ -72,16 +109,23 @@ class BaseMVPipeline:
         pass
 
     def _load_geo_mapping(self):
-        try:
-            with open('/root/autodl-tmp/mvpipeline/utils/zip_to_county_name.json', 'r') as json_file:
-                self.geomap['zip_to_county_name'] = json.load(json_file)
-            with open('/root/autodl-tmp/mvpipeline/utils/zip_to_county_fips.json', 'r') as json_file:
-                self.geomap['zip_to_county_fips'] = json.load(json_file)
-            with open('/root/autodl-tmp/mvpipeline/utils/zip_to_state_name.json', 'r') as json_file:
-                self.geomap['zip_to_state_name'] = json.load(json_file)
-        except Exception as e:
-            print(f"An error occurred during geo map loading: {e}") 
-            raise
+        mapping_files = {
+            'zip_to_county_name': 'zip_to_county_name.json',
+            'zip_to_county_fips': 'zip_to_county_fips.json',
+            'zip_to_state_name': 'zip_to_state_name.json',
+        }
+        local_utils_path = Path(__file__).parent / 'utils'
+        server_utils_path = Path('/root/autodl-tmp/mvpipeline/utils')
+
+        for mapping_name, file_name in mapping_files.items():
+            candidates = [server_utils_path / file_name, local_utils_path / file_name]
+            mapping_path = next((path for path in candidates if path.exists()), None)
+            if mapping_path is None:
+                raise FileNotFoundError(
+                    f"Could not find {file_name} in either {server_utils_path} or {local_utils_path}"
+                )
+            with open(mapping_path, 'r') as json_file:
+                self.geomap[mapping_name] = json.load(json_file)
     
     def _construct_raw_file_path(self):
         '''
@@ -97,7 +141,8 @@ class BaseMVPipeline:
         if not output_path:
             self._output_path = Path(__file__).parent / 'output' / 'transformed_data' / self.config['state'] / f'layout_{self.config["layout"]}' / self.config['name']
         else:
-            self._output_path = output_path
+            self._output_path = Path(output_path)
+        self._output_path.mkdir(parents=True, exist_ok=True)
 
     def _construct_exported_df_path(self, df_name: valid_df_name):
             '''
@@ -113,6 +158,15 @@ class BaseMVPipeline:
             lower_date = self._dataset_lower_bound.strftime('%Y-%m-%d')  # Format as 'YYYY-MM-DD'
             upper_date = self._dataset_upper_bound.strftime('%Y-%m-%d') 
             return self._output_path / f'{self.config["name"]}_{df_name}__{lower_date}_to_{upper_date}.csv'
+
+    def _construct_ground_truth_audit_path(self, artifact_name):
+        """Construct a dated path for a ground-truth audit artifact."""
+        lower_date = self._dataset_lower_bound.strftime('%Y-%m-%d')
+        upper_date = self._dataset_upper_bound.strftime('%Y-%m-%d')
+        return self._output_path / (
+            f'{self.config["name"]}_{artifact_name}__'
+            f'{lower_date}_to_{upper_date}.csv'
+        )
 
     def _construct_comparison_table_path(self):
             '''
@@ -151,8 +205,8 @@ class BaseMVPipeline:
         ''' Loading the raw per_county and per_outage datasets '''
         try:
             per_county_file_path, per_outage_file_path = self._construct_raw_file_path()
-            self._per_county = pd.read_csv(per_county_file_path)
-            self._per_outage = pd.read_csv(per_outage_file_path)
+            self._per_county = pd.read_csv(_path_for_io(per_county_file_path))
+            self._per_outage = pd.read_csv(_path_for_io(per_outage_file_path))
         except Exception as e:
             logging.warning(f"An error occurred during file loading: {e}. There may not be an existing per_outage or per_county file.")
             raise
@@ -168,11 +222,12 @@ class BaseMVPipeline:
             df_path = self._construct_exported_df_path(df_name)
 
             exists = False
-            if df_path.exists():
+            df_io_path = _path_for_io(df_path)
+            if os.path.isfile(df_io_path):
                 print(f"The computed dataframe for {df_name} exists. Loading into self._{df_name}_df")
                 variable_name = f"_{df_name}_df"
                 if hasattr(self, variable_name):
-                    read_df = pd.read_csv(df_path)
+                    read_df = pd.read_csv(df_io_path)
                     setattr(self, variable_name, read_df)
                     self._update_name_to_df_map(df_name= df_name, df=read_df)
             else:
@@ -221,8 +276,16 @@ class BaseMVPipeline:
                 f"Instance Variable ._{df_name}_df is an empty dataframe. Something may have went wrong with aggregating the raw file or when loading a preexisting aggregated df (like the raw data or imported file were originally empty)"
             )
 
-        dataframe['start_time'] = pd.to_datetime(dataframe['start_time'], utc=True).dt.tz_convert(eastern)
-        dataframe['end_time'] = pd.to_datetime(dataframe['end_time'], utc=True).dt.tz_convert(eastern)
+        # Exported event tables can legitimately mix timestamps with and
+        # without fractional seconds.  pandas 3 infers one strict format from
+        # the first value unless mixed parsing is requested, so reuse the same
+        # cross-version parser used for raw snapshots.
+        dataframe['start_time'] = self._coerce_to_eastern_datetime(
+            dataframe['start_time']
+        )
+        dataframe['end_time'] = self._coerce_to_eastern_datetime(
+            dataframe['end_time']
+        )
 
         dataframe['weighted_customers_out'] = pd.to_numeric(dataframe['weighted_customers_out'])
         dataframe['average_customers_out'] = pd.to_numeric(dataframe['average_customers_out'])
@@ -257,11 +320,12 @@ class BaseMVPipeline:
             comparison_table_path = self._construct_comparison_table_path()
 
             exists = False
-            if comparison_table_path.exists():
+            comparison_table_io_path = _path_for_io(comparison_table_path)
+            if os.path.isfile(comparison_table_io_path):
                 print(f"A previously exported comparison table exists. Loading into self._comparison_table")
                 variable_name = f"_comparison_table"
                 if hasattr(self, variable_name):
-                    read_df = pd.read_csv(comparison_table_path)
+                    read_df = pd.read_csv(comparison_table_io_path)
                     setattr(self, variable_name, read_df)
             else:
                 print(f"The path {comparison_table_path} does not exist. No dataframe file has been exported before or a file with a different time span exists. Check to make sure the right lower-bound timeframe and upper-bound timeframe is set.")
@@ -284,6 +348,176 @@ class BaseMVPipeline:
             )
         else:
             self._name_to_df[df_name] = df
+
+    def _ground_truth_settings(self):
+        """Return provider-specific settings with conservative defaults."""
+        options = self.config.get('ground_truth', {})
+        return GroundTruthSettings(
+            expected_snapshot_interval_minutes=float(
+                options.get('expected_snapshot_interval_minutes', 15)
+            ),
+            max_observation_gap_minutes=float(
+                options.get('max_observation_gap_minutes', 31)
+            ),
+            start_time_merge_tolerance_minutes=float(
+                options.get(
+                    'start_time_merge_tolerance_minutes',
+                    self.ground_truth_start_time_merge_tolerance_minutes,
+                )
+            ),
+            minimum_valid_year=int(options.get('minimum_valid_year', 2000)),
+        )
+
+    @staticmethod
+    def _coerce_to_eastern_datetime(values):
+        return coerce_datetime_series(values, timezone='US/Eastern')
+
+    def _prepare_ground_truth_snapshots(self):
+        """Clean per-outage observations and construct stable episode IDs."""
+        if self._per_outage.empty:
+            self._ground_truth_snapshot_report = pd.DataFrame()
+            return
+        if not self.ground_truth_event_id_columns:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} must define ground_truth_event_id_columns"
+            )
+        if not self.ground_truth_start_column or not self.ground_truth_customers_column:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} must define ground-truth start/customer columns"
+            )
+
+        self._per_outage, self._ground_truth_snapshot_report = prepare_outage_snapshots(
+            self._per_outage,
+            event_id_columns=self.ground_truth_event_id_columns,
+            start_column=self.ground_truth_start_column,
+            customers_column=self.ground_truth_customers_column,
+            source_duration_column=self.ground_truth_source_duration_column,
+            identity_is_derived=self.ground_truth_identity_is_derived,
+            settings=self._ground_truth_settings(),
+        )
+
+    @staticmethod
+    def _first_non_null_by_episode(dataframe, column):
+        if not column or column not in dataframe.columns:
+            return pd.Series(dtype='object')
+        return dataframe.groupby('_gt_episode_id', sort=False)[column].first()
+
+    @staticmethod
+    def _lookup_geo_value(mapping, value):
+        if pd.isna(value):
+            return pd.NA
+        candidates = [value, str(value)]
+        try:
+            numeric_string = str(int(float(value)))
+            candidates.extend([numeric_string, numeric_string.zfill(5)])
+        except (TypeError, ValueError, OverflowError):
+            pass
+        for candidate in candidates:
+            if candidate in mapping:
+                return mapping[candidate]
+        return pd.NA
+
+    def _aggregate_ground_truth_metadata(self):
+        """Collect non-metric source metadata without affecting event metrics."""
+        snapshots = self._per_outage
+        grouped = snapshots.groupby('_gt_episode_id', sort=False)
+        metadata = pd.DataFrame(index=grouped.size().index)
+
+        output_id_column = self.ground_truth_event_id_output_column
+        if output_id_column in snapshots.columns:
+            metadata[output_id_column] = grouped[output_id_column].first()
+            metadata['source_event_id_values'] = grouped[output_id_column].agg(
+                lambda values: '|'.join(
+                    values.dropna().astype('string').drop_duplicates().tolist()
+                )
+            )
+            metadata['source_event_id_value_count'] = grouped[
+                output_id_column
+            ].nunique(dropna=True)
+        else:
+            metadata[output_id_column] = grouped['_gt_raw_event_id'].first()
+            metadata['source_event_id_values'] = grouped[
+                '_gt_raw_event_id'
+            ].first()
+            metadata['source_event_id_value_count'] = 1
+
+        if self.ground_truth_utility_column in snapshots.columns:
+            metadata['utility_provider'] = grouped[
+                self.ground_truth_utility_column
+            ].first()
+        else:
+            metadata['utility_provider'] = self.config['name']
+
+        longitude = self._first_non_null_by_episode(
+            snapshots, self.ground_truth_longitude_column
+        ).reindex(metadata.index)
+        latitude = self._first_non_null_by_episode(
+            snapshots, self.ground_truth_latitude_column
+        ).reindex(metadata.index)
+        metadata['outage_point'] = [
+            (long_value, lat_value)
+            if pd.notna(long_value) and pd.notna(lat_value)
+            else pd.NA
+            for long_value, lat_value in zip(longitude, latitude)
+        ]
+
+        zipcode = self._first_non_null_by_episode(
+            snapshots, self.ground_truth_zip_column
+        ).reindex(metadata.index)
+        metadata['zipcode'] = zipcode
+
+        source_county = self._first_non_null_by_episode(
+            snapshots, self.ground_truth_county_column
+        ).reindex(metadata.index)
+        zip_to_county = self.geomap.get('zip_to_county_name', {})
+        zip_to_fips = self.geomap.get('zip_to_county_fips', {})
+        zip_to_state = self.geomap.get('zip_to_state_name', {})
+        county_from_zip = zipcode.apply(
+            lambda value: self._lookup_geo_value(zip_to_county, value)
+        )
+        metadata['county_name'] = source_county.combine_first(county_from_zip)
+        metadata['county_fips'] = zipcode.apply(
+            lambda value: self._lookup_geo_value(zip_to_fips, value)
+        )
+        metadata['state'] = zipcode.apply(
+            lambda value: self._lookup_geo_value(zip_to_state, value)
+        )
+        metadata['state'] = metadata['state'].fillna(
+            str(self.config['state']).upper()
+        )
+
+        if self.ground_truth_restored_column in snapshots.columns:
+            restored = pd.to_numeric(
+                snapshots[self.ground_truth_restored_column], errors='coerce'
+            )
+            metadata['customer_restored_max'] = restored.groupby(
+                snapshots['_gt_episode_id']
+            ).max().reindex(metadata.index)
+        else:
+            metadata['customer_restored_max'] = pd.NA
+
+        return metadata.reset_index().rename(
+            columns={'_gt_episode_id': 'episode_id'}
+        )
+
+    def _finalize_ground_truth(self, aggregated):
+        """Validate event invariants and expose valid/all/flagged datasets."""
+        all_events, valid_events, flagged_events, event_report = (
+            validate_ground_truth_events(aggregated)
+        )
+        quality_report = pd.concat(
+            [self._ground_truth_snapshot_report, event_report],
+            ignore_index=True,
+        )
+        quality_report.insert(0, 'utility', self.config['name'])
+        quality_report.insert(0, 'layout', self.config['layout'])
+        quality_report.insert(0, 'state', self.config['state'])
+
+        self._ground_truth_all_df = all_events
+        self._ground_truth_df = valid_events
+        self._ground_truth_flagged_df = flagged_events
+        self._ground_truth_quality_report = quality_report
+        self._update_name_to_df_map('ground_truth', self._ground_truth_df)
 
     def _transform_per_county(self):
         '''
@@ -334,8 +568,13 @@ class BaseMVPipeline:
 
         self._per_outage = self._per_outage[
             (self._per_outage['timestamp'] >= self._dataset_lower_bound) &
-            (self._per_outage['timestamp'] <= self._dataset_upper_bound) 
+            (self._per_outage['timestamp'] <= self._dataset_upper_bound)
         ]
+
+        # Build auditable outage episodes only after applying the study window.
+        # This prevents expensive preparation of snapshots that cannot be used.
+        if not self._per_outage.empty:
+            self._prepare_ground_truth_snapshots()
 
         if self._per_county.empty:
             print(f"In transform_datasets(): Filtered per_county dataset is empty. Either the original dataset is empty or there is no data within {self._dataset_lower_bound} to {self._dataset_upper_bound}")
@@ -362,16 +601,44 @@ class BaseMVPipeline:
             raise Exception("per_outage is empty and is probably not loaded. Make sure ._load_raw_data is run and also run ._transform_per_outage after loading. Stopping execution.")
         
         exists = False
-        if groundtruth_path.exists():
-            print(f"The file {groundtruth_path} exists.")
-            self._ground_truth_df = pd.read_csv(groundtruth_path)
-            exists = True
-        
         if force_agg:
             print("Forcing groundtruth aggregation")
-            exists = False
+        elif os.path.isfile(_path_for_io(groundtruth_path)):
+            print(f"The file {groundtruth_path} exists.")
+            loaded_ground_truth = pd.read_csv(_path_for_io(groundtruth_path))
+            has_current_version = (
+                'ground_truth_version' in loaded_ground_truth.columns
+                and loaded_ground_truth['ground_truth_version']
+                .astype(str)
+                .eq(GROUND_TRUTH_VERSION)
+                .all()
+            )
+            if has_current_version:
+                self._ground_truth_df = loaded_ground_truth
+                self._ground_truth_all_df = loaded_ground_truth.copy()
+                self._update_name_to_df_map('ground_truth', self._ground_truth_df)
+                exists = True
+            else:
+                print(
+                    "Existing ground truth predates the validated builder and will be regenerated."
+                )
+        
+        if exists:
+            return True
 
-        return exists
+        if '_gt_episode_id' not in self._per_outage.columns:
+            self._prepare_ground_truth_snapshots()
+
+        aggregated = build_ground_truth_events(
+            self._per_outage,
+            dataset_lower_bound=self._dataset_lower_bound,
+            dataset_upper_bound=self._dataset_upper_bound,
+            settings=self._ground_truth_settings(),
+        )
+        metadata = self._aggregate_ground_truth_metadata()
+        aggregated = aggregated.merge(metadata, on='episode_id', how='left')
+        self._finalize_ground_truth(aggregated)
+        return False
 
     def do_method(self, force_agg=False, threshold = None):
         '''
@@ -398,9 +665,9 @@ class BaseMVPipeline:
             if force_agg:
                 print("Forcing do algorithm")
                 do_df = pd.concat([do_df, do_algorithm(self, threshold=_do_thres)])
-            elif do_path.exists():
+            elif os.path.isfile(_path_for_io(do_path)):
                 print(f"The file {do_path} already exists. Reading file in.")
-                self._do_df= pd.read_csv(do_path)
+                self._do_df= pd.read_csv(_path_for_io(do_path))
                 self._update_name_to_df_map('do', self._do_df)
                 return
             else:
@@ -446,9 +713,9 @@ class BaseMVPipeline:
             if force_agg:
                 print("Forcing ganz algorithm")
                 ganz_df = pd.concat([ganz_df, ganz_algorithm(self, threshold=_ganzthres)])
-            elif ganz_path.exists():
+            elif os.path.isfile(_path_for_io(ganz_path)):
                 print(f"The file {ganz_path} already exists. Reading file in.")
-                self._ganz_df = pd.read_csv(ganz_path)
+                self._ganz_df = pd.read_csv(_path_for_io(ganz_path))
                 self._update_name_to_df_map('ganz', self._ganz_df)
                 return
             else:
@@ -515,9 +782,11 @@ class BaseMVPipeline:
                 if force_agg:
                     print("Forcing mixed_threshold algorithm")
                     _mixed_df = pd.concat([_mixed_df, mixed_threshold_algorithm(self, relative_threshold=_relthres, absolute_diff=_abs_diff)])
-                elif mixed_threshold_path.exists():
+                elif os.path.isfile(_path_for_io(mixed_threshold_path)):
                     print(f"The file {mixed_threshold_path} already exists. Reading file in.")
-                    self._mixed_threshold_df= pd.read_csv(mixed_threshold_path)
+                    self._mixed_threshold_df= pd.read_csv(
+                        _path_for_io(mixed_threshold_path)
+                    )
                     self._update_name_to_df_map('mixed_threshold', self._mixed_threshold_df)
                     return
                 else:
@@ -542,9 +811,9 @@ class BaseMVPipeline:
         if force_agg:
             print("Forcing changepoints algorithm")
             self._changepoints_df = changepoints_algorithm(self)
-        elif changepoints_path.exists():
+        elif os.path.isfile(_path_for_io(changepoints_path)):
             print(f"The file {changepoints_path} already exists. Reading file in.")
-            self._changepoints_df = pd.read_csv(changepoints_path)
+            self._changepoints_df = pd.read_csv(_path_for_io(changepoints_path))
         else: 
             self._changepoints_df = changepoints_algorithm(self)
         
@@ -735,6 +1004,29 @@ class BaseMVPipeline:
         self.transform_datasets()
         self.run_methods()
         self._comparison_table = self.generate_comparison_table()
+
+    def _export_ground_truth_audit_files(self, replace=False):
+        """Export the complete, flagged, and summary audit views."""
+        artifacts = {
+            'ground_truth_all': self._ground_truth_all_df,
+            'ground_truth_flagged': self._ground_truth_flagged_df,
+            'ground_truth_quality_report': self._ground_truth_quality_report,
+        }
+        for artifact_name, dataframe in artifacts.items():
+            if dataframe is None:
+                continue
+            artifact_path = self._construct_ground_truth_audit_path(artifact_name)
+            artifact_io_path = _path_for_io(artifact_path)
+            if os.path.isfile(artifact_io_path) and not replace:
+                print(f"{artifact_path} already exists and not replacing.")
+                continue
+            dataframe.to_csv(artifact_io_path, index=False)
+            logging.info(
+                "Exported %s for %s to %s",
+                artifact_name,
+                self.config['name'],
+                artifact_path,
+            )
     
     def export_file(self, df_name:valid_df_name, output_folder = None, replace = False):
         '''
@@ -756,25 +1048,31 @@ class BaseMVPipeline:
                 f"The dataframe for {df_name} is None or empty. Make sure the respective method is run"
             )
 
-        lower_date = self._dataset_lower_bound.strftime('%Y-%m-%d')  # Format as 'YYYY-MM-DD'
-        upper_date = self._dataset_upper_bound.strftime('%Y-%m-%d') 
-
         logging.info(f"Exporting file for {df_name} for {self.config['name']}")
 
         df_file_path = self._construct_exported_df_path(df_name=df_name)
+        df_file_io_path = _path_for_io(df_file_path)
         # breakpoint()
         logging.info(f"Exporting {df_name} for {self.config['name']} to {df_file_path}")
-        if os.path.isfile(df_file_path):
+        exported = False
+        if os.path.isfile(df_file_io_path):
             if not replace:
                 print(f"{df_file_path} already exists and not replacing. Not exporting...")
             else:
                 print(f"{df_file_path} already exists but replacing. Exporting...")
-                os.remove(df_file_path)
-                dataframe.to_csv(df_file_path, index=False)
+                os.remove(df_file_io_path)
+                dataframe.to_csv(df_file_io_path, index=False)
+                exported = True
         
         else:
             # check if similar name file exists
-            df_file_similar = glob.glob(os.path.join(self._output_path, f'*{self.config["name"]}_{df_name}*'))
+            similar_pattern = _path_for_io(
+                os.path.join(
+                    self._output_path,
+                    f'*{self.config["name"]}_{df_name}*',
+                )
+            )
+            df_file_similar = glob.glob(similar_pattern)
 
             if df_file_similar:
                 if replace:
@@ -785,7 +1083,11 @@ class BaseMVPipeline:
                     print(f"Files similar to {self.config['name']}_{df_name} found but NOT replacing them")
             
             print(f"Exporting {df_name}...")
-            dataframe.to_csv(df_file_path, index=False)
+            dataframe.to_csv(df_file_io_path, index=False)
+            exported = True
+
+        if df_name == 'ground_truth' and exported:
+            self._export_ground_truth_audit_files(replace=replace)
 
 
     def export_comparison_table(self, output_folder = None, replace = False):
@@ -808,18 +1110,25 @@ class BaseMVPipeline:
         print(f"Exporting file for comparison table for {self.config['name']}")
 
         comparison_table_path = self._construct_comparison_table_path()
+        comparison_table_io_path = _path_for_io(comparison_table_path)
 
-        if os.path.isfile(comparison_table_path):
+        if os.path.isfile(comparison_table_io_path):
             if not replace:
                 print(f"{comparison_table_path} already exists and not replacing. Not exporting...")
             else:
                 print(f"{comparison_table_path} already exists but replacing. Exporting...")
-                os.remove(comparison_table_path)
-                dataframe.to_csv(comparison_table_path, index=False)
+                os.remove(comparison_table_io_path)
+                dataframe.to_csv(comparison_table_io_path, index=False)
         
         else:
             # check if similar name file exists
-            df_file_similar = glob.glob(os.path.join(self._output_path, f'*{self.config["name"]}_comparison_table*'))
+            similar_pattern = _path_for_io(
+                os.path.join(
+                    self._output_path,
+                    f'*{self.config["name"]}_comparison_table*',
+                )
+            )
+            df_file_similar = glob.glob(similar_pattern)
 
             if df_file_similar:
                 if replace:
@@ -830,7 +1139,7 @@ class BaseMVPipeline:
                     print(f"Files similar to {self.config['name']}_comparison_table found but NOT replacing them")
             
             print(f"Exporting comparison table...")
-            dataframe.to_csv(comparison_table_path, index=False)
+            dataframe.to_csv(comparison_table_io_path, index=False)
 
     def export_multiple_files(self, df_list, output_folder = None, replace = False):
         pass

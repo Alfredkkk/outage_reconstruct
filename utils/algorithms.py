@@ -1,12 +1,21 @@
 import pandas as pd
 import logging
 import argparse
+import os
 import numpy as np
 from datetime import timedelta
 from utils.ChangePointDetection import ChangePointDetection
 
 from pathlib import Path
 import concurrent.futures as cf
+
+
+def _changepoint_executor_settings(row_count):
+    """Choose a Windows-safe executor without changing the parameter grid."""
+    if os.name == 'nt' and row_count >= 1_000_000:
+        return cf.ThreadPoolExecutor, 2
+    return cf.ProcessPoolExecutor, 16
+
 
 def do_algorithm(instance, threshold = 0.001):
     '''
@@ -616,21 +625,38 @@ def changepoints_algorithm(instance):
 
     merged_changepoints_df = pd.DataFrame()
     
-    tasks = []
-    # HACK
-    # for _, row in best_model_hist.iterrows():
-    #     mod = row['mod']
-    #     for _pen in np.linspace(model_range[mod][0], model_range[mod][1], 10):
-    #         algo.evaluate_model(algo.train_per_county, mod, _pen)
-    with cf.ProcessPoolExecutor(max_workers=16) as executor:
+    parameter_grid = []
+    for _, row in best_model_hist.iterrows():
+        mod = row['mod']
+        for _pen in np.linspace(model_range[mod][0], model_range[mod][1], 10):
+            parameter_grid.append((mod, np.round(_pen, 10)))
+
+    # Windows starts fresh worker processes and serializes every submitted
+    # argument.  Sending the multi-million-row California dataframe (and the
+    # ChangePointDetection instance that also contains it) to 16 processes can
+    # exhaust memory and Win32 pipe resources.  A small thread pool shares the
+    # same in-memory dataframe and preserves the model/penalty grid.  Keep the
+    # historical process pool for smaller Windows inputs and non-Windows runs.
+    executor_class, max_workers = _changepoint_executor_settings(
+        len(algo.train_per_county)
+    )
+    use_shared_memory_threads = executor_class is cf.ThreadPoolExecutor
+    if use_shared_memory_threads:
+        print(
+            "Using 2 shared-memory threads for the large Windows "
+            "change-point grid"
+        )
+
+    with executor_class(max_workers=max_workers) as executor:
         future_to_params = {}
-        
-        for _, row in best_model_hist.iterrows():
-            mod = row['mod']
-            for _pen in np.linspace(model_range[mod][0], model_range[mod][1], 10):
-                _pen = np.round(_pen, 10)
-                future = executor.submit(algo.evaluate_model, algo.train_per_county, mod, _pen)
-                future_to_params[future] = (mod, _pen)
+        for mod, penalty in parameter_grid:
+            future = executor.submit(
+                algo.evaluate_model,
+                algo.train_per_county,
+                mod,
+                penalty,
+            )
+            future_to_params[future] = (mod, penalty)
         
         for future in cf.as_completed(future_to_params):
             results_by_county, change_points_by_county = future.result()

@@ -123,15 +123,40 @@ class ChangePointDetection:
         logging.info(f"Detecting outages with parameters: model={mod}, penalty={pen_val}")
         import time
         start_time = time.time()
-        def process_group(group):
-            result, changepoints = self.detect_outages(group, mod, pen_val)
-            return pd.Series({'results': result, 'changepoints': changepoints})
 
-        results_and_changepoints = grouped_data.apply(process_group)
-        # breakpoint()
-        
-        results_by_county = pd.concat(results_and_changepoints['results'].tolist()).reset_index(drop=True)
-        change_points_by_county = results_and_changepoints['changepoints']
+        # pandas 3 no longer includes grouping columns in the DataFrame passed
+        # to GroupBy.apply().  detect_outages() needs ``county`` when it builds
+        # each output event, so iterate over the explicit (key, group) pairs
+        # and restore the key defensively.  This also avoids the deprecated
+        # GroupBy.apply behavior without changing the detection algorithm.
+        result_frames = []
+        changepoints_by_county = {}
+        for county, group in grouped_data:
+            group = group.copy()
+            if identification not in group.columns:
+                group[identification] = county
+            result, changepoints = self.detect_outages(group, mod, pen_val)
+            if not result.empty:
+                result_frames.append(result)
+            changepoints_by_county[county] = changepoints
+
+        if result_frames:
+            results_by_county = pd.concat(result_frames, ignore_index=True)
+        else:
+            results_by_county = pd.DataFrame(
+                columns=[
+                    'county',
+                    'start_time',
+                    'end_time',
+                    'average_customers_out',
+                    'duration',
+                    'weighted_customers_out',
+                    'segment_label',
+                ]
+            )
+        change_points_by_county = pd.Series(
+            changepoints_by_county, dtype='object', name='changepoints'
+        )
         end_time = time.time()
         
         logging.info(f"Done eval outages with parameters: model={mod}, penalty={pen_val}, time taken: {end_time - start_time:.2f} seconds")

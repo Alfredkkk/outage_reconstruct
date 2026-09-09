@@ -1,5 +1,12 @@
 # Reproducing the Submitted GROWER M&V Experiment in VS Code
 
+> **Ground-truth implementation update:** the current source tree now uses the
+> validated ground-truth builder version 2.0, so a new run will not reproduce
+> the submitted legacy ground-truth values exactly. Preserve the archived
+> submitted outputs for baseline reproduction. See
+> [`GROUND_TRUTH_CHANGES.md`](GROUND_TRUTH_CHANGES.md) for the corrected builder,
+> quality gate, audit files, and validation status.
+
 ## Material Passport
 
 - **Artifact type:** Legacy experiment reproduction guide
@@ -208,4 +215,3 @@ Successful reproduction means that the submitted results have been recovered; it
 - The change-point implementation includes preprocessing and segmentation choices that should be audited before a revised experiment.
 
 The archived output should therefore be retained as the **submitted baseline**. Any corrected ground-truth rules, new evaluation metrics, held-out parameter selection, or algorithm changes should be run into a separate output directory and reported as a new experiment rather than silently replacing this baseline.
-

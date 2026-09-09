@@ -84,7 +84,7 @@ def export_files(pipeline, output_folder, replace = False):
 def main():
     global export_folder
 
-    with open('/root/autodl-tmp/mvpipeline/mvp_config.yaml', 'r') as file:
+    with open(Path(__file__).resolve().parent / 'mvp_config.yaml', 'r') as file:
         config = yaml.safe_load(file)
         base_file_path = config['globals']['LOCAL_FILE_BASE_PATH']        
 
